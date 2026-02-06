@@ -54,10 +54,6 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("243"))
 
-	// Detail view value style
-	detailValueStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("15"))
-
 	// Filter prompt style
 	filterPromptStyle = lipgloss.NewStyle().
 				Bold(true).

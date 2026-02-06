@@ -4,29 +4,12 @@ A live-updating TUI dashboard for monitoring Claude Code sessions across CLI and
 
 ## Tech Stack
 
-### Current (bash prototype)
-
-- Bash (macOS 3.2 compatible)
-- `jq` for JSON parsing
-- `ps` / `lsof` for process discovery
-- ANSI escape codes for rendering
-
-### Planned Rewrite
-
 - Go 1.24+
 - [Bubbletea](https://github.com/charmbracelet/bubbletea) v1 — TUI framework (Elm architecture)
 - [Bubbles](https://github.com/charmbracelet/bubbles) — table, viewport, textinput components
 - [Lipgloss](https://github.com/charmbracelet/lipgloss) v1 — terminal styling
 
 ## Project Structure
-
-```
-cctop             # Bash prototype (current implementation)
-SPEC.md           # Behavioral spec & data model reference
-CLAUDE.md         # This file
-```
-
-### Planned Go Structure
 
 ```
 cmd/cctop/main.go             # Thin entry point
@@ -103,31 +86,13 @@ Path encoding: `/` and `.` are replaced with `-`.
 
 ## Commands
 
-### Current (bash)
-
 ```bash
-./cctop              # Live dashboard
-./cctop --once       # Print once and exit
-./cctop --debug      # Live dashboard with timing to stderr
-```
-
-### Planned (Go)
-
-```bash
-make build          # go build -o cctop ./cmd/cctop
+make build          # go build -o cctop-go ./cmd/cctop
 make test           # go test ./...
 make run            # Build and launch
 ```
 
 ## Keybindings
-
-### Current
-
-| Key | Action |
-|-----|--------|
-| q   | Quit   |
-
-### Planned (TUI rewrite)
 
 | Key | Mode | Action |
 |-----|------|--------|
@@ -139,58 +104,3 @@ make run            # Build and launch
 | q | Normal | Quit |
 | esc | Filter/Detail | Back to session list |
 | ctrl+c | Any | Force quit |
-
-## Go Rewrite Notes
-
-### Package Boundaries
-
-- `session` package owns discovery, parsing, and state detection — no TUI dependency
-- `tui` package owns rendering and input handling — depends on `session` types
-- `main` is a thin entry point — parse flags, call `tui.Run()`
-
-### Key Types (planned)
-
-```go
-type State int
-const (
-    StateActive State = iota
-    StateWaiting
-    StateIdle
-)
-
-type Source struct {
-    Type string  // "CLI", "VSCode", "Cursor", etc.
-}
-
-type Session struct {
-    PID       int
-    CWD       string
-    State     State
-    Source    Source
-    Project   string    // last 2 path components
-    Topic     string    // cleaned first prompt
-    Branch    string
-    Duration  time.Duration
-    Messages  int
-}
-```
-
-### Process Discovery
-
-Replace subprocess calls with Go stdlib:
-
-| Bash | Go |
-|------|----|
-| `ps -eo pid,etime,tty,command` | `os/exec` or `/proc` on Linux, `sysctl` on macOS |
-| `lsof -a -p PID -d cwd -Fn` | `os/exec` (lsof is still needed on macOS) or `/proc/<pid>/cwd` on Linux |
-| `jq` | `encoding/json` (native, no dependency) |
-| `stat -f '%m'` | `os.Stat().ModTime()` |
-| `tail -1` | `io.SeekEnd` + backward scan |
-
-### Testing Strategy
-
-Follow jeb-todo-md pattern: test the data layer, not the TUI.
-
-- **session/discover_test.go** — mock ps/lsof output, verify session list
-- **session/metadata_test.go** — fixture JSONL files, verify state detection and topic extraction
-- **session/types_test.go** — state priority sorting, path encoding

@@ -152,21 +152,15 @@ When no sessions are found:
 
 ### Refresh Loop
 
+Discovery runs in a background goroutine on a 2-second tick:
+
 1. Discover all running Claude processes (single `ps` call)
 2. Resolve working directories (single batched `lsof` call)
 3. Match processes to session transcripts on disk
 4. Determine state for each session
-5. Render the table
-6. Wait for the refresh interval, accepting `q` to quit
+5. Deliver results to the TUI for rendering
 
 **Refresh interval**: 2 seconds.
-
-### Terminal Management
-
-- Runs in the alternate screen buffer (`tput smcup`/`rmcup`)
-- Cursor is hidden during operation
-- Screen is redrawn via cursor-home + overwrite (no full clear, avoids flicker)
-- Clean exit on `SIGINT`, `SIGTERM`, or `q` keypress — restores terminal state
 
 ### Topic Extraction
 
@@ -218,51 +212,33 @@ Options:
 |------------|--------------------------------------|---------------------|
 | `ps`       | Enumerate running processes          | POSIX / macOS       |
 | `lsof`     | Resolve process working directories  | macOS default       |
-| `jq`       | Parse JSON transcript and lock files | Must be installed   |
-| `stat -f`  | Get file modification time           | macOS (`-f '%m'`)   |
-| `tput`     | Terminal capabilities (size, alt screen) | POSIX / macOS   |
 
 ### Platform Notes
 
-- `stat -f '%m'` is macOS-specific. Linux uses `stat -c '%Y'`.
+- On Linux, process CWDs are resolved via `/proc/<pid>/cwd` instead of `lsof`.
 - `lsof` output format (`-Fn`) is consistent across macOS and Linux.
 - `ps -eo pid,etime,tty,command` is POSIX-compatible.
 - IDE lock file detection assumes `~/.claude/ide/` exists (created by Claude Code IDE extensions).
+- All JSON parsing, file mtime checks, and JSONL reading are handled natively in Go (no `jq`, `stat`, or `tput` needed).
 
-## Go Rewrite Architecture
+## Implementation Notes
 
-The bash prototype is being replaced with a Go TUI app using Bubbletea (Elm architecture). This section documents patterns and decisions for the rewrite.
+### External Commands vs Native Go
 
-### Project Layout
-
-Follow jeb-todo-md conventions:
-
-```
-cmd/cctop/main.go              # Thin entry point: parse flags, call tui.Run()
-internal/
-  tui/
-    model.go                   # Bubbletea model, Update(), View()
-    styles.go                  # Lipgloss style constants
-  session/
-    discover.go                # Process enumeration, CWD resolution, lock file parsing
-    metadata.go                # JSONL parsing, state detection, topic extraction
-    types.go                   # Session, State, Source types
-tests/
-  session_test.go              # Discovery logic unit tests
-  metadata_test.go             # State detection & topic extraction tests
-```
-
-`internal/` enforces package privacy. `session` package has zero TUI dependency — it produces `[]Session` from the filesystem and process table. `tui` package consumes `[]Session` for rendering.
+The only external commands used are `ps` (process enumeration) and `lsof` (CWD resolution on macOS). Everything else — JSON parsing, file stat, last-line reading, line counting — is handled with Go stdlib (`encoding/json`, `os.Stat`, `io.SeekEnd` + backward scan, `bufio.Scanner`).
 
 ### TUI Modes
 
-The rewrite expands from a read-only monitor to an interactive TUI with modes:
-
 | Mode | Purpose | Transitions |
 |------|---------|-------------|
-| **ModeNormal** | Browse session list, view summary | Default mode |
-| **ModeFilter** | Text input to filter sessions by project/topic | `/` from Normal, `esc` back |
-| **ModeDetail** | View expanded session info (full topic, path, metadata) | `enter` from Normal, `esc` back |
+| **Normal** | Browse session list, view summary | Default mode |
+| **Filter** | Text input to filter sessions by project/topic | `/` from Normal, `esc`/`enter` back |
+| **Detail** | View expanded session info (full topic, path, metadata) | `enter` from Normal, `esc` back |
+
+### State Filters and Sort
+
+- **State filter** cycles with `f`: all → active → waiting → idle
+- **Sort order** cycles with `s`: state (default) → duration → project
 
 ### Keybindings
 
@@ -271,87 +247,17 @@ The rewrite expands from a read-only monitor to an interactive TUI with modes:
 | j/k, up/down | Normal | Navigate session list |
 | enter | Normal | Open session detail view |
 | / | Normal | Open filter input |
-| f | Normal | Cycle state filter: all → active → waiting → idle |
-| s | Normal | Cycle sort: state → duration → project |
+| f | Normal | Cycle state filter |
+| s | Normal | Cycle sort order |
 | q | Normal | Quit |
 | esc | Filter/Detail | Return to Normal |
 | ctrl+c | Any | Force quit |
 
-### Bubbletea Patterns
+### Refresh
 
-Follow the same patterns as jeb-todo-md:
-
-- **Mode-specific update handlers** — `updateNormal(msg)`, `updateFilter(msg)`, `updateDetail(msg)` keep Update() clean
-- **Immediate data refresh** — each tick re-discovers sessions (no dirty flag needed, it's read-only)
-- **Embedded bubbles components** — `textinput.Model` for filter, `table.Model` or custom list for session rows
-- **Window size tracking** — `tea.WindowSizeMsg` stored on model, used for responsive column layout
-
-### Session Discovery (Go equivalents)
-
-| Current (bash + subprocesses) | Go replacement |
-|-------------------------------|----------------|
-| `ps -eo pid,etime,tty,command \| grep` | `exec.Command("ps", ...)` → parse stdout (still needed, no pure-Go alternative on macOS) |
-| `lsof -a -p PIDs -d cwd -Fn` | `exec.Command("lsof", ...)` → parse `p`/`n` lines. On Linux, read `/proc/<pid>/cwd` symlink instead |
-| `jq` (3-6 calls per cycle) | `encoding/json` — native, zero subprocess overhead |
-| `stat -f '%m'` | `os.Stat(path).ModTime()` — native |
-| `tail -1` on JSONL | `io.SeekEnd` + backward byte scan — native, no subprocess |
-| `wc -l` for message count | `bufio.Scanner` line count or estimate from `file.Stat().Size()` |
-| `head -30 \| jq -s` | `bufio.Scanner` first 30 lines + `json.Unmarshal` |
-
-**Net effect:** The only external commands are `ps` and `lsof` (macOS). Everything else becomes native Go, eliminating ~95% of subprocess forks.
-
-### Tick-Based Refresh
-
-```go
-type tickMsg time.Time
-
-func tickCmd() tea.Cmd {
-    return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-        return tickMsg(t)
-    })
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-    switch msg := msg.(type) {
-    case tickMsg:
-        m.sessions = session.Discover()
-        return m, tickCmd()
-    }
-}
-```
-
-### Caching Strategy
-
-The Go rewrite should cache session metadata the same way:
-
-- Key: `cwd` + JSONL file `ModTime()`
-- Cached fields: topic, message count, branch, full path
-- Always recompute: state (depends on wall-clock time vs mtime)
-- Use `sync.Map` or a plain `map[string]cachedSession` (single-goroutine access)
-
-### Testing Strategy
-
-Follow jeb-todo-md: test the data layer, not the TUI.
-
-- **session package tests** — feed fixture JSONL files and mock `ps`/`lsof` output, assert `[]Session` contents
-- **State detection tests** — fixture files with known mtimes, assert correct state enum
-- **Topic extraction tests** — fixture first-prompt strings with IDE tags, assert cleaned output
-- **Path encoding tests** — assert `encode("/Users/me/project")` == `-Users-me-project`
-
-### Cross-Platform
-
-| Concern | macOS | Linux |
-|---------|-------|-------|
-| Process CWD | `lsof -a -p PID -d cwd -Fn` | `os.Readlink("/proc/<pid>/cwd")` |
-| File mtime | `os.Stat()` (same) | `os.Stat()` (same) |
-| Terminal | Bubbletea handles both | Bubbletea handles both |
-| `ps` output | Same flags work | Same flags work |
-
-Build-tag or runtime detection in `discover.go` to pick the right CWD resolution strategy.
+Session discovery runs in a background goroutine triggered by a 2-second tick. Each tick fires `refreshSessionsCmd()` which calls `session.DiscoverAll()` and delivers the result as a `sessionsRefreshedMsg`.
 
 ## Future Considerations
-
-These are out of scope for the initial Go rewrite but noted for later:
 
 - **Filesystem watching** — `fsnotify`/`kqueue` instead of polling for JSONL changes
 - **Session interaction** — attach to a session, send input, view live output

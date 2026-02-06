@@ -41,6 +41,49 @@ const (
 	FilterIdle
 )
 
+const (
+	// minTerminalWidth is the minimum terminal width before showing a "too narrow" message.
+	minTerminalWidth = 60
+
+	// branchColThreshold is the remaining width above which the BRANCH column appears.
+	branchColThreshold = 80
+
+	// projectWidthPercent is the percentage of remaining width allocated to the PROJECT column.
+	projectWidthPercent = 35
+
+	// minProjectColWidth is the minimum width for the PROJECT column.
+	minProjectColWidth = 10
+
+	// minTopicColWidth is the minimum width for the TOPIC column.
+	minTopicColWidth = 15
+
+	// fixedColumnSpacing is the total padding/spacing used by the fixed-width columns.
+	fixedColumnSpacing = 6
+
+	// uiVerticalOverhead is the number of lines consumed by header, blank, column header,
+	// help line, and margins.
+	uiVerticalOverhead = 6
+
+	// refreshInterval is the time between session discovery cycles.
+	refreshInterval = 2 * time.Second
+)
+
+// columnWidths holds the computed widths for each table column.
+type columnWidths struct {
+	state   int
+	source  int
+	project int
+	topic   int
+	branch  int
+	dur     int
+}
+
+// headerPart pairs the plain text of a header element with its styled rendering.
+type headerPart struct {
+	plain  string
+	styled string
+}
+
 // model holds the Bubbletea application state.
 type model struct {
 	sessions     []session.Session
@@ -135,7 +178,7 @@ func refreshSessionsCmd() tea.Cmd {
 
 // tickCmd schedules the next refresh after the interval.
 func tickCmd() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -309,6 +352,57 @@ func (m model) View() string {
 	}
 }
 
+// computeColumnWidths calculates column widths based on the terminal width.
+func computeColumnWidths(terminalWidth int) columnWidths {
+	cw := columnWidths{
+		state:  3,
+		source: 7,
+		dur:    7,
+	}
+
+	remaining := terminalWidth - cw.state - cw.source - cw.dur - fixedColumnSpacing
+	if remaining > branchColThreshold {
+		cw.branch = 16
+		remaining -= cw.branch + 2
+	}
+
+	cw.project = remaining * projectWidthPercent / 100
+	cw.topic = remaining - cw.project
+
+	if cw.project < minProjectColWidth {
+		cw.project = minProjectColWidth
+	}
+	if cw.topic < minTopicColWidth {
+		cw.topic = minTopicColWidth
+	}
+
+	return cw
+}
+
+// stateIconStyled renders a state icon with the appropriate style and column width.
+func stateIconStyled(state session.State, colWidth int) string {
+	switch state {
+	case session.StateActive:
+		return activeStyle.Render(fmt.Sprintf("%-*s", colWidth, "\u25C9"))
+	case session.StateWaiting:
+		return waitingStyle.Render(fmt.Sprintf("%-*s", colWidth, "\u25CF"))
+	default:
+		return idleStyle.Render(fmt.Sprintf("%-*s", colWidth, "\u25CB"))
+	}
+}
+
+// stateDisplayWithIcon returns a styled "icon label" string for the detail view.
+func stateDisplayWithIcon(state session.State) string {
+	switch state {
+	case session.StateActive:
+		return activeStyle.Render("\u25C9 active")
+	case session.StateWaiting:
+		return waitingStyle.Render("\u25CF waiting")
+	default:
+		return idleStyle.Render("\u25CB idle")
+	}
+}
+
 // renderNormal renders the main session list view.
 func (m model) renderNormal() string {
 	var b strings.Builder
@@ -322,7 +416,7 @@ func (m model) renderNormal() string {
 	}
 
 	// Minimum width check
-	if width < 60 {
+	if width < minTerminalWidth {
 		return headerStyle.Width(width).Render(" cctop") + "\n\n  Terminal too narrow (need 60+ cols)"
 	}
 
@@ -349,44 +443,24 @@ func (m model) renderNormal() string {
 	}
 
 	// ---- Column widths ----
-	colST := 3
-	colSRC := 7
-	colDUR := 7
-	colBranch := 0
-	fixedWidth := colST + colSRC + colDUR + 6 // spacing
-
-	remaining := width - fixedWidth
-	if remaining > 80 {
-		colBranch = 16
-		remaining -= colBranch + 2
-	}
-
-	colProject := remaining * 35 / 100
-	colTopic := remaining - colProject
-
-	if colProject < 10 {
-		colProject = 10
-	}
-	if colTopic < 15 {
-		colTopic = 15
-	}
+	cw := computeColumnWidths(width)
 
 	b.WriteString("\n")
 
 	// ---- Column headers ----
 	b.WriteString(" ")
-	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", colST, "ST")))
-	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", colSRC, "SRC")))
-	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", colProject, "PROJECT")))
-	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", colTopic, "TOPIC")))
-	if colBranch > 0 {
-		b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", colBranch, "BRANCH")))
+	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", cw.state, "ST")))
+	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", cw.source, "SRC")))
+	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", cw.project, "PROJECT")))
+	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", cw.topic, "TOPIC")))
+	if cw.branch > 0 {
+		b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %-*s", cw.branch, "BRANCH")))
 	}
-	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %*s", colDUR, "DUR")))
+	b.WriteString(columnHeaderStyle.Render(fmt.Sprintf(" %*s", cw.dur, "DUR")))
 	b.WriteString("\n")
 
 	// ---- Rows ----
-	maxRows := height - 6 // header + blank + col header + help + margins
+	maxRows := height - uiVerticalOverhead
 	if maxRows < 1 {
 		maxRows = 1
 	}
@@ -400,7 +474,7 @@ func (m model) renderNormal() string {
 		}
 
 		isSelected := i == m.cursor
-		b.WriteString(m.renderRow(s, isSelected, colST, colSRC, colProject, colTopic, colBranch, colDUR))
+		b.WriteString(m.renderRow(s, isSelected, cw))
 		b.WriteString("\n")
 	}
 
@@ -430,31 +504,33 @@ func (m model) renderNormal() string {
 func (m model) renderHeader(width int, activeCount int, waitingCount int, idleCount int, totalCount int) string {
 	titleText := " cctop -- Claude Session Monitor"
 
-	var rightParts []string
+	var parts []headerPart
 	if activeCount > 0 {
-		rightParts = append(rightParts, activeStyle.Render(fmt.Sprintf("%d active", activeCount)))
+		text := fmt.Sprintf("%d active", activeCount)
+		parts = append(parts, headerPart{text, activeStyle.Render(text)})
 	}
 	if waitingCount > 0 {
-		rightParts = append(rightParts, waitingStyle.Render(fmt.Sprintf("%d waiting", waitingCount)))
+		text := fmt.Sprintf("%d waiting", waitingCount)
+		parts = append(parts, headerPart{text, waitingStyle.Render(text)})
 	}
 	if idleCount > 0 {
-		rightParts = append(rightParts, dimStyle.Render(fmt.Sprintf("%d idle", idleCount)))
+		text := fmt.Sprintf("%d idle", idleCount)
+		parts = append(parts, headerPart{text, dimStyle.Render(text)})
 	}
-	rightParts = append(rightParts, helpStyle.Render("[q]uit"))
-	rightText := strings.Join(rightParts, "  ")
+	quitText := "[q]uit"
+	parts = append(parts, headerPart{quitText, helpStyle.Render(quitText)})
 
-	// Calculate the plain-text width of the right side for padding
+	// Build styled right side and calculate plain-text width
+	var styledParts []string
 	rightPlainLen := 0
-	if activeCount > 0 {
-		rightPlainLen += len(fmt.Sprintf("%d active", activeCount)) + 2
+	for i, part := range parts {
+		styledParts = append(styledParts, part.styled)
+		rightPlainLen += len(part.plain)
+		if i < len(parts)-1 {
+			rightPlainLen += 2 // "  " separator
+		}
 	}
-	if waitingCount > 0 {
-		rightPlainLen += len(fmt.Sprintf("%d waiting", waitingCount)) + 2
-	}
-	if idleCount > 0 {
-		rightPlainLen += len(fmt.Sprintf("%d idle", idleCount)) + 2
-	}
-	rightPlainLen += len("[q]uit") + 2
+	rightText := strings.Join(styledParts, "  ")
 
 	// Pad the middle
 	middlePad := width - len(titleText) - rightPlainLen
@@ -466,7 +542,7 @@ func (m model) renderHeader(width int, activeCount int, waitingCount int, idleCo
 }
 
 // renderRow renders a single session row.
-func (m model) renderRow(s session.Session, isSelected bool, colST int, colSRC int, colProject int, colTopic int, colBranch int, colDUR int) string {
+func (m model) renderRow(s session.Session, isSelected bool, cw columnWidths) string {
 	var b strings.Builder
 
 	// Cursor indicator
@@ -477,28 +553,15 @@ func (m model) renderRow(s session.Session, isSelected bool, colST int, colSRC i
 	}
 
 	// State icon
-	var stateIcon string
-	var stateStyled string
-	switch s.State {
-	case session.StateActive:
-		stateIcon = "\u25C9" // ◉
-		stateStyled = activeStyle.Render(fmt.Sprintf("%-*s", colST, stateIcon))
-	case session.StateWaiting:
-		stateIcon = "\u25CF" // ●
-		stateStyled = waitingStyle.Render(fmt.Sprintf("%-*s", colST, stateIcon))
-	default:
-		stateIcon = "\u25CB" // ○
-		stateStyled = idleStyle.Render(fmt.Sprintf("%-*s", colST, stateIcon))
-	}
 	b.WriteString(" ")
-	b.WriteString(stateStyled)
+	b.WriteString(stateIconStyled(s.State, cw.state))
 
 	// Source
 	var sourceStyled string
 	if s.Source.Type == "CLI" {
-		sourceStyled = cliSourceStyle.Render(fmt.Sprintf("%-*s", colSRC, s.Source.Type))
+		sourceStyled = cliSourceStyle.Render(fmt.Sprintf("%-*s", cw.source, s.Source.Type))
 	} else {
-		sourceStyled = ideSourceStyle.Render(fmt.Sprintf("%-*s", colSRC, s.Source.Type))
+		sourceStyled = ideSourceStyle.Render(fmt.Sprintf("%-*s", cw.source, s.Source.Type))
 	}
 	b.WriteString(" ")
 	b.WriteString(sourceStyled)
@@ -510,26 +573,26 @@ func (m model) renderRow(s session.Session, isSelected bool, colST int, colSRC i
 	}
 
 	// Project
-	projectDisplay := truncateString(s.Project, colProject)
+	projectDisplay := truncateString(s.Project, cw.project)
 	b.WriteString(" ")
-	b.WriteString(textStyleFn(fmt.Sprintf("%-*s", colProject, projectDisplay)))
+	b.WriteString(textStyleFn(fmt.Sprintf("%-*s", cw.project, projectDisplay)))
 
 	// Topic
-	topicDisplay := truncateString(s.Topic, colTopic)
+	topicDisplay := truncateString(s.Topic, cw.topic)
 	b.WriteString(" ")
-	b.WriteString(textStyleFn(fmt.Sprintf("%-*s", colTopic, topicDisplay)))
+	b.WriteString(textStyleFn(fmt.Sprintf("%-*s", cw.topic, topicDisplay)))
 
 	// Branch (optional)
-	if colBranch > 0 {
-		branchDisplay := truncateString(s.Branch, colBranch)
+	if cw.branch > 0 {
+		branchDisplay := truncateString(s.Branch, cw.branch)
 		b.WriteString(" ")
-		b.WriteString(textStyleFn(fmt.Sprintf("%-*s", colBranch, branchDisplay)))
+		b.WriteString(textStyleFn(fmt.Sprintf("%-*s", cw.branch, branchDisplay)))
 	}
 
 	// Duration
 	durationStr := session.FormatDuration(s.Duration)
 	b.WriteString(" ")
-	b.WriteString(textStyleFn(fmt.Sprintf("%*s", colDUR, durationStr)))
+	b.WriteString(textStyleFn(fmt.Sprintf("%*s", cw.dur, durationStr)))
 
 	return b.String()
 }
@@ -573,22 +636,11 @@ func (m model) renderDetail() string {
 
 	s := filtered[m.cursor]
 
-	// State with icon
-	var stateDisplay string
-	switch s.State {
-	case session.StateActive:
-		stateDisplay = activeStyle.Render("\u25C9 active")
-	case session.StateWaiting:
-		stateDisplay = waitingStyle.Render("\u25CF waiting")
-	default:
-		stateDisplay = idleStyle.Render("\u25CB idle")
-	}
-
 	details := []struct {
 		label string
 		value string
 	}{
-		{"State", stateDisplay},
+		{"State", stateDisplayWithIcon(s.State)},
 		{"Source", s.Source.String()},
 		{"PID", fmt.Sprintf("%d", s.PID)},
 		{"Project", s.Project},

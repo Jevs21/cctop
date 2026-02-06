@@ -12,6 +12,26 @@ import (
 	"time"
 )
 
+const (
+	// maxScannerBufferBytes is the buffer size for scanning long JSONL lines.
+	maxScannerBufferBytes = 1024 * 1024 // 1MB
+
+	// maxPromptLength is the maximum character length for a first-prompt topic.
+	maxPromptLength = 200
+
+	// maxLinesToScanPrompt is how many JSONL lines to scan when looking for
+	// the first user message.
+	maxLinesToScanPrompt = 30
+
+	// activeRecentThreshold is how recently a file must have been modified
+	// to be considered active (Rule 1 of the state machine).
+	activeRecentThreshold = 30 * time.Second
+
+	// activeUserPromptThreshold is the maximum file age for a user-role last
+	// line to still count as active (Rule 4 of the state machine).
+	activeUserPromptThreshold = 5 * time.Minute
+)
+
 // cachedMetadata stores transcript metadata keyed by cwd + mtime.
 type cachedMetadata struct {
 	FullPath string
@@ -161,10 +181,9 @@ func findSessionFromIndex(indexPath string) (fullPath string, firstPrompt string
 		return "", "", 0, "", false
 	}
 
-	// Truncate firstPrompt to 200 chars
 	prompt := entry.FirstPrompt
-	if len(prompt) > 200 {
-		prompt = prompt[:200]
+	if len(prompt) > maxPromptLength {
+		prompt = prompt[:maxPromptLength]
 	}
 
 	return entry.FullPath, prompt, entry.MessageCount, entry.GitBranch, true
@@ -196,7 +215,7 @@ func findSessionFallback(projectDir string) (fullPath string, firstPrompt string
 		return "", "", 0, "", false
 	}
 
-	// Read first 30 lines to find the first user message
+	// Read first N lines to find the first user message
 	firstPrompt = extractFirstPrompt(newestPath)
 
 	// Count lines for approximate message count
@@ -217,8 +236,13 @@ func findSessionFallback(projectDir string) (fullPath string, firstPrompt string
 	return newestPath, firstPrompt, messageCount, gitBranch, true
 }
 
-// extractFirstPrompt scans the first 30 lines of a JSONL file for the first
-// meaningful user message, skipping system-generated messages.
+// configureScannerBuffer sets up a scanner with a large buffer for long JSONL lines.
+func configureScannerBuffer(scanner *bufio.Scanner) {
+	scanner.Buffer(make([]byte, maxScannerBufferBytes), maxScannerBufferBytes)
+}
+
+// extractFirstPrompt scans the first maxLinesToScanPrompt lines of a JSONL file
+// for the first meaningful user message, skipping system-generated messages.
 func extractFirstPrompt(jsonlPath string) string {
 	file, err := os.Open(jsonlPath)
 	if err != nil {
@@ -227,10 +251,10 @@ func extractFirstPrompt(jsonlPath string) string {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for long lines
+	configureScannerBuffer(scanner)
 	lineCount := 0
 
-	for scanner.Scan() && lineCount < 30 {
+	for scanner.Scan() && lineCount < maxLinesToScanPrompt {
 		lineCount++
 		line := scanner.Text()
 		if line == "" {
@@ -253,8 +277,8 @@ func extractFirstPrompt(jsonlPath string) string {
 			continue
 		}
 
-		if len(text) > 200 {
-			text = text[:200]
+		if len(text) > maxPromptLength {
+			text = text[:maxPromptLength]
 		}
 
 		return text
@@ -304,7 +328,7 @@ func countLines(filePath string) int {
 
 	count := 0
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	configureScannerBuffer(scanner)
 	for scanner.Scan() {
 		count++
 	}
@@ -321,7 +345,7 @@ func DetectState(jsonlPath string, mtime time.Time, now time.Time) State {
 	age := now.Sub(mtime)
 
 	// Rule 1: recently modified → active
-	if age < 30*time.Second {
+	if age < activeRecentThreshold {
 		return StateActive
 	}
 
@@ -347,7 +371,7 @@ func DetectState(jsonlPath string, mtime time.Time, now time.Time) State {
 	}
 
 	// Rule 4: user role + recent → active
-	if entry.Message.Role == "user" && age < 5*time.Minute {
+	if entry.Message.Role == "user" && age < activeUserPromptThreshold {
 		return StateActive
 	}
 
@@ -414,53 +438,82 @@ func CleanTopic(prompt string) string {
 		return ""
 	}
 
-	// Strip <ide_selection>...</ide_selection> wrapper
-	if strings.HasPrefix(prompt, "<ide_selection>") {
-		// Try to get text after the closing tag
-		if idx := strings.Index(prompt, "</ide_selection>"); idx != -1 {
-			afterTag := strings.TrimSpace(prompt[idx+len("</ide_selection>"):])
-			if afterTag != "" {
-				prompt = afterTag
-			} else {
-				// Try to extract inner text
-				inner := prompt[len("<ide_selection>"):idx]
-				if cutIdx := strings.Index(inner, "This may or may not"); cutIdx != -1 {
-					inner = inner[:cutIdx]
-				}
-				if colonIdx := strings.Index(inner, ": "); colonIdx != -1 {
-					inner = inner[colonIdx+2:]
-				}
-				inner = strings.TrimSpace(inner)
-				if inner != "" {
-					prompt = inner
-				} else {
-					return "(IDE selection)"
-				}
-			}
+	// Step 1: Handle <ide_selection> wrapper
+	if result, handled := stripIDESelectionTag(prompt); handled {
+		prompt = result
+		if prompt == "" {
+			return ""
 		}
 	}
 
-	// Strip <ide_opened_file>...</ide_opened_file>
-	if strings.HasPrefix(prompt, "<ide_opened_file>") {
-		if idx := strings.Index(prompt, "opened the file "); idx != -1 {
-			rest := prompt[idx+len("opened the file "):]
-			if endIdx := strings.Index(rest, " in the IDE"); endIdx != -1 {
-				filePath := rest[:endIdx]
-				baseName := filepath.Base(filePath)
-				return "(opened " + baseName + ")"
-			}
-		}
-		return "(IDE context)"
+	// Step 2: Handle <ide_opened_file> wrapper (returns early with formatted string)
+	if result, handled := stripIDEOpenedFileTag(prompt); handled {
+		return result
 	}
 
-	// Strip all remaining XML-style tags
+	// Step 3: Strip remaining XML tags and noise prefixes
+	return stripXMLAndNoise(prompt)
+}
+
+// stripIDESelectionTag handles the <ide_selection>...</ide_selection> wrapper.
+// Returns the cleaned prompt and true if the tag was found, or the original
+// prompt and false if not.
+func stripIDESelectionTag(prompt string) (string, bool) {
+	if !strings.HasPrefix(prompt, "<ide_selection>") {
+		return prompt, false
+	}
+
+	// Try to get text after the closing tag
+	if idx := strings.Index(prompt, "</ide_selection>"); idx != -1 {
+		afterTag := strings.TrimSpace(prompt[idx+len("</ide_selection>"):])
+		if afterTag != "" {
+			return afterTag, true
+		}
+
+		// Try to extract inner text
+		inner := prompt[len("<ide_selection>"):idx]
+		if cutIdx := strings.Index(inner, "This may or may not"); cutIdx != -1 {
+			inner = inner[:cutIdx]
+		}
+		if colonIdx := strings.Index(inner, ": "); colonIdx != -1 {
+			inner = inner[colonIdx+2:]
+		}
+		inner = strings.TrimSpace(inner)
+		if inner != "" {
+			return inner, true
+		}
+
+		return "(IDE selection)", true
+	}
+
+	return prompt, true
+}
+
+// stripIDEOpenedFileTag handles the <ide_opened_file>...</ide_opened_file> wrapper.
+// Returns a formatted display string and true if the tag was found, or empty
+// string and false if not.
+func stripIDEOpenedFileTag(prompt string) (string, bool) {
+	if !strings.HasPrefix(prompt, "<ide_opened_file>") {
+		return "", false
+	}
+
+	if idx := strings.Index(prompt, "opened the file "); idx != -1 {
+		rest := prompt[idx+len("opened the file "):]
+		if endIdx := strings.Index(rest, " in the IDE"); endIdx != -1 {
+			filePath := rest[:endIdx]
+			baseName := filepath.Base(filePath)
+			return "(opened " + baseName + ")", true
+		}
+	}
+
+	return "(IDE context)", true
+}
+
+// stripXMLAndNoise strips remaining XML tags and noise prefixes, then
+// collapses whitespace.
+func stripXMLAndNoise(prompt string) string {
 	prompt = xmlTagRegex.ReplaceAllString(prompt, "")
-
-	// Strip common noise prefixes
 	prompt = noiseRegex.ReplaceAllString(prompt, "")
-
-	// Collapse newlines and multiple spaces into single spaces
 	prompt = strings.Join(strings.Fields(prompt), " ")
-
 	return prompt
 }
