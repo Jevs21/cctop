@@ -199,7 +199,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.onceMode {
 			return m, tea.Quit
 		}
-		return m, nil
+		return m, tickCmd()
 
 	case tickMsg:
 		return m, refreshSessionsCmd()
