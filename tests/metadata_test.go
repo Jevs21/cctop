@@ -227,6 +227,66 @@ func TestDetectState(t *testing.T) {
 			t.Errorf("expected StateIdle for nonexistent file, got %v", state)
 		}
 	})
+
+	t.Run("assistant with AskUserQuestion is input state", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "ask_user.jsonl")
+		content := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I need to ask you something."},{"type":"tool_use","id":"toolu_123","name":"AskUserQuestion","input":{}}]}}`
+		writeTestFile(t, filePath, content)
+
+		now := time.Now()
+		mtime := now.Add(-60 * time.Second)
+		os.Chtimes(filePath, mtime, mtime)
+
+		state := session.DetectState(filePath, mtime, now)
+		if state != session.StateInput {
+			t.Errorf("expected StateInput for AskUserQuestion tool use, got %v", state)
+		}
+	})
+
+	t.Run("assistant with other tool use is waiting state", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "other_tool.jsonl")
+		content := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Let me read a file."},{"type":"tool_use","id":"toolu_456","name":"Read","input":{}}]}}`
+		writeTestFile(t, filePath, content)
+
+		now := time.Now()
+		mtime := now.Add(-60 * time.Second)
+		os.Chtimes(filePath, mtime, mtime)
+
+		state := session.DetectState(filePath, mtime, now)
+		if state != session.StateWaiting {
+			t.Errorf("expected StateWaiting for non-AskUserQuestion tool use, got %v", state)
+		}
+	})
+
+	t.Run("assistant with text only content blocks is waiting state", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "text_only.jsonl")
+		content := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here is my response."}]}}`
+		writeTestFile(t, filePath, content)
+
+		now := time.Now()
+		mtime := now.Add(-60 * time.Second)
+		os.Chtimes(filePath, mtime, mtime)
+
+		state := session.DetectState(filePath, mtime, now)
+		if state != session.StateWaiting {
+			t.Errorf("expected StateWaiting for text-only assistant message, got %v", state)
+		}
+	})
+
+	t.Run("assistant with string content is waiting state", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "string_content.jsonl")
+		content := `{"type":"assistant","message":{"role":"assistant","content":"Just a string response"}}`
+		writeTestFile(t, filePath, content)
+
+		now := time.Now()
+		mtime := now.Add(-60 * time.Second)
+		os.Chtimes(filePath, mtime, mtime)
+
+		state := session.DetectState(filePath, mtime, now)
+		if state != session.StateWaiting {
+			t.Errorf("expected StateWaiting for string content, got %v", state)
+		}
+	})
 }
 
 func TestReadLastLine(t *testing.T) {

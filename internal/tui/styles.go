@@ -18,6 +18,10 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("46")) // Green
 
+	inputStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("177")) // Purple
+
 	idleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")) // Dim gray
 

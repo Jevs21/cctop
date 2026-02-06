@@ -57,7 +57,7 @@ Each cycle (every 2 seconds):
 4. Discover IDE sessions (from lock files + cached ps)
 5. Deduplicate by CWD (IDE takes priority over CLI)
 6. Enrich each session: match to JSONL, detect state, extract topic
-7. Render table sorted by state priority (active → waiting → idle)
+7. Render table sorted by state priority (active → waiting → input → idle)
 
 ### Caching
 
@@ -99,7 +99,7 @@ make run            # Build and launch
 | j/k, arrows | Normal | Navigate sessions |
 | enter | Normal | View session detail |
 | / | Normal | Filter sessions |
-| f | Normal | Cycle state filter (all → active → waiting → idle) |
+| f | Normal | Cycle state filter (all → active → waiting → input → idle) |
 | s | Normal | Cycle sort order |
 | q | Normal | Quit |
 | esc | Filter/Detail | Back to session list |

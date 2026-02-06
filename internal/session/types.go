@@ -11,6 +11,7 @@ type State int
 const (
 	StateActive  State = iota // Claude is generating or processing
 	StateWaiting              // Claude has responded, awaiting user input
+	StateInput                // Claude is blocked waiting for user response to a question
 	StateIdle                 // Session exists but has been inactive
 )
 
@@ -21,6 +22,8 @@ func (s State) String() string {
 		return "active"
 	case StateWaiting:
 		return "waiting"
+	case StateInput:
+		return "input"
 	case StateIdle:
 		return "idle"
 	default:

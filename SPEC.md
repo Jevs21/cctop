@@ -17,19 +17,22 @@ A session is a running Claude Code process. Each session is associated with:
 
 ### Session State
 
-Each session is in exactly one of three states:
+Each session is in exactly one of four states:
 
-| State     | Meaning                                        | Visual      |
-|-----------|------------------------------------------------|-------------|
-| `active`  | Claude is currently generating or processing   | Yellow `◉`  |
-| `waiting` | Claude has responded, awaiting user input       | Green `●`   |
-| `idle`    | Session exists but has been inactive            | Dim `○`     |
+| State     | Meaning                                                    | Visual         |
+|-----------|------------------------------------------------------------|----------------|
+| `active`  | Claude is currently generating or processing               | Yellow `◉`     |
+| `waiting` | Claude has responded, awaiting user input                  | Green `●`      |
+| `input`   | Claude is blocked waiting for user response to a question  | Purple `◈`     |
+| `idle`    | Session exists but has been inactive                       | Dim `○`        |
 
 State is determined from the session's JSONL transcript file:
 
 1. If the file was modified within the last **30 seconds** → `active`
 2. If the last line has `"type": "progress"` → `active`
-3. If the last line has `"message.role": "assistant"` → `waiting`
+3. If the last line has `"message.role": "assistant"`:
+   - If `message.content` contains a `tool_use` block with `"name": "AskUserQuestion"` → `input`
+   - Otherwise → `waiting`
 4. If the last line has `"message.role": "user"` and the file is less than **5 minutes** old → `active`
 5. Otherwise → `idle`
 
@@ -129,7 +132,7 @@ Top line shows:
 
 ### Sort Order
 
-Rows are sorted by state priority: `active` first, then `waiting`, then `idle`.
+Rows are sorted by state priority: `active` first, then `waiting`, then `input`, then `idle`.
 
 ### Layout Rules
 
@@ -237,7 +240,7 @@ The only external commands used are `ps` (process enumeration) and `lsof` (CWD r
 
 ### State Filters and Sort
 
-- **State filter** cycles with `f`: all → active → waiting → idle
+- **State filter** cycles with `f`: all → active → waiting → input → idle
 - **Sort order** cycles with `s`: state (default) → duration → project
 
 ### Keybindings

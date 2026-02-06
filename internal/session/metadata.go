@@ -318,6 +318,32 @@ func extractMessageText(raw json.RawMessage) string {
 	return ""
 }
 
+// hasToolUse checks if message content contains a tool_use block with the given name.
+// The content field can be a string or an array of content blocks; strings never
+// contain tool_use blocks, so only the array form is checked.
+func hasToolUse(raw json.RawMessage, toolName string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+
+	var contentBlocks []struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+
+	if err := json.Unmarshal(raw, &contentBlocks); err != nil {
+		return false
+	}
+
+	for _, block := range contentBlocks {
+		if block.Type == "tool_use" && block.Name == toolName {
+			return true
+		}
+	}
+
+	return false
+}
+
 // countLines returns the number of lines in a file.
 func countLines(filePath string) int {
 	file, err := os.Open(filePath)
@@ -365,8 +391,11 @@ func DetectState(jsonlPath string, mtime time.Time, now time.Time) State {
 		return StateActive
 	}
 
-	// Rule 3: assistant role → waiting
+	// Rule 3: assistant role → check for AskUserQuestion tool use
 	if entry.Message.Role == "assistant" {
+		if hasToolUse(entry.Message.Content, "AskUserQuestion") {
+			return StateInput
+		}
 		return StateWaiting
 	}
 

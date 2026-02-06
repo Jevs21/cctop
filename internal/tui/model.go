@@ -38,6 +38,7 @@ const (
 	FilterAll     StateFilter = iota
 	FilterActive
 	FilterWaiting
+	FilterInput
 	FilterIdle
 )
 
@@ -246,7 +247,7 @@ func (m model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmd := m.filterInput.Focus()
 		return m, cmd
 	case "f":
-		m.stateFilter = (m.stateFilter + 1) % 4
+		m.stateFilter = (m.stateFilter + 1) % 5
 		m.cursor = 0
 	case "s":
 		m.sortField = (m.sortField + 1) % 3
@@ -299,6 +300,10 @@ func (m model) filteredSessions() []session.Session {
 			}
 		case FilterWaiting:
 			if s.State != session.StateWaiting {
+				continue
+			}
+		case FilterInput:
+			if s.State != session.StateInput {
 				continue
 			}
 		case FilterIdle:
@@ -386,6 +391,8 @@ func stateIconStyled(state session.State, colWidth int) string {
 		return activeStyle.Render(fmt.Sprintf("%-*s", colWidth, "\u25C9"))
 	case session.StateWaiting:
 		return waitingStyle.Render(fmt.Sprintf("%-*s", colWidth, "\u25CF"))
+	case session.StateInput:
+		return inputStyle.Render(fmt.Sprintf("%-*s", colWidth, "\u25C8"))
 	default:
 		return idleStyle.Render(fmt.Sprintf("%-*s", colWidth, "\u25CB"))
 	}
@@ -398,6 +405,8 @@ func stateDisplayWithIcon(state session.State) string {
 		return activeStyle.Render("\u25C9 active")
 	case session.StateWaiting:
 		return waitingStyle.Render("\u25CF waiting")
+	case session.StateInput:
+		return inputStyle.Render("\u25C8 input")
 	default:
 		return idleStyle.Render("\u25CB idle")
 	}
@@ -423,11 +432,11 @@ func (m model) renderNormal() string {
 	filtered := m.filteredSessions()
 
 	// Count states from all sessions (not filtered)
-	activeCount, waitingCount, idleCount := m.countStates()
+	activeCount, waitingCount, inputCount, idleCount := m.countStates()
 	totalCount := len(m.sessions)
 
 	// ---- Header ----
-	b.WriteString(m.renderHeader(width, activeCount, waitingCount, idleCount, totalCount))
+	b.WriteString(m.renderHeader(width, activeCount, waitingCount, inputCount, idleCount, totalCount))
 	b.WriteString("\n")
 
 	// ---- Empty state ----
@@ -501,7 +510,7 @@ func (m model) renderNormal() string {
 }
 
 // renderHeader builds the header bar with title and state counts.
-func (m model) renderHeader(width int, activeCount int, waitingCount int, idleCount int, totalCount int) string {
+func (m model) renderHeader(width int, activeCount int, waitingCount int, inputCount int, idleCount int, totalCount int) string {
 	titleText := " cctop -- Claude Session Monitor"
 
 	var parts []headerPart
@@ -512,6 +521,10 @@ func (m model) renderHeader(width int, activeCount int, waitingCount int, idleCo
 	if waitingCount > 0 {
 		text := fmt.Sprintf("%d waiting", waitingCount)
 		parts = append(parts, headerPart{text, waitingStyle.Render(text)})
+	}
+	if inputCount > 0 {
+		text := fmt.Sprintf("%d input", inputCount)
+		parts = append(parts, headerPart{text, inputStyle.Render(text)})
 	}
 	if idleCount > 0 {
 		text := fmt.Sprintf("%d idle", idleCount)
@@ -664,20 +677,22 @@ func (m model) renderDetail() string {
 	return b.String()
 }
 
-// countStates returns the count of active, waiting, and idle sessions.
-func (m model) countStates() (int, int, int) {
-	var activeCount, waitingCount, idleCount int
+// countStates returns the count of active, waiting, input, and idle sessions.
+func (m model) countStates() (int, int, int, int) {
+	var activeCount, waitingCount, inputCount, idleCount int
 	for _, s := range m.sessions {
 		switch s.State {
 		case session.StateActive:
 			activeCount++
 		case session.StateWaiting:
 			waitingCount++
+		case session.StateInput:
+			inputCount++
 		case session.StateIdle:
 			idleCount++
 		}
 	}
-	return activeCount, waitingCount, idleCount
+	return activeCount, waitingCount, inputCount, idleCount
 }
 
 // truncateString truncates a string to maxLen, appending an ellipsis if needed.
@@ -701,6 +716,8 @@ func stateFilterName(filter StateFilter) string {
 		return "active"
 	case FilterWaiting:
 		return "waiting"
+	case FilterInput:
+		return "input"
 	case FilterIdle:
 		return "idle"
 	default:
