@@ -23,9 +23,10 @@ const (
 	// the first user message.
 	maxLinesToScanPrompt = 30
 
-	// activeRecentThreshold is how recently a file must have been modified
-	// to be considered active (Rule 1 of the state machine).
-	activeRecentThreshold = 30 * time.Second
+	// activeRecentThreshold is the mtime fallback window: if the last line
+	// has unrecognized content but the file was modified within this threshold,
+	// the session is considered active.
+	activeRecentThreshold = 5 * time.Second
 
 	// activeUserPromptThreshold is the maximum file age for a user-role last
 	// line to still count as active (Rule 4 of the state machine).
@@ -361,37 +362,43 @@ func countLines(filePath string) int {
 	return count
 }
 
-// DetectState determines the session state using the 5-rule state machine from the spec.
-//  1. If the file was modified within the last 30 seconds → active
-//  2. If the last line has type "progress" → active
-//  3. If the last line has message.role "assistant" → waiting
-//  4. If the last line has message.role "user" and file is < 5 minutes old → active
-//  5. Otherwise → idle
+// DetectState determines session state using a content-first approach.
+// The last JSONL line is checked first for definitive state signals; mtime is
+// only used as a fallback when the content is ambiguous or unreadable.
+//
+//  1. Read the last line. If read fails or is empty → mtime < 5s ? active : idle
+//  2. If JSON parse fails → mtime < 5s ? active : idle
+//  3. type == "progress" → active
+//  4. message.role == "assistant" → check AskUserQuestion → input or waiting
+//  5. message.role == "user" && age < 5 min → active
+//  6. mtime < 5s (fallback for unrecognized content) → active
+//  7. default → idle
 func DetectState(jsonlPath string, mtime time.Time, now time.Time) State {
 	age := now.Sub(mtime)
 
-	// Rule 1: recently modified → active
-	if age < activeRecentThreshold {
-		return StateActive
-	}
-
-	// Read last line for type/role checks
+	// Always read last line first — content is the primary signal
 	lastLine := ReadLastLine(jsonlPath)
 	if lastLine == "" {
+		if age < activeRecentThreshold {
+			return StateActive
+		}
 		return StateIdle
 	}
 
 	var entry jsonlLine
 	if err := json.Unmarshal([]byte(lastLine), &entry); err != nil {
+		if age < activeRecentThreshold {
+			return StateActive
+		}
 		return StateIdle
 	}
 
-	// Rule 2: progress type → active
+	// Rule 3: progress type → active
 	if entry.Type == "progress" {
 		return StateActive
 	}
 
-	// Rule 3: assistant role → check for AskUserQuestion tool use
+	// Rule 4: assistant role → check for AskUserQuestion tool use
 	if entry.Message.Role == "assistant" {
 		if hasToolUse(entry.Message.Content, "AskUserQuestion") {
 			return StateInput
@@ -399,12 +406,17 @@ func DetectState(jsonlPath string, mtime time.Time, now time.Time) State {
 		return StateWaiting
 	}
 
-	// Rule 4: user role + recent → active
+	// Rule 5: user role + recent → active
 	if entry.Message.Role == "user" && age < activeUserPromptThreshold {
 		return StateActive
 	}
 
-	// Rule 5: default → idle
+	// Rule 6: mtime fallback for unrecognized content types
+	if age < activeRecentThreshold {
+		return StateActive
+	}
+
+	// Rule 7: default → idle
 	return StateIdle
 }
 

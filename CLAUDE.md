@@ -37,19 +37,19 @@ Process CWDs are resolved via `lsof`, then matched to transcript files on disk a
 
 ### Session State Machine
 
-State is derived from the JSONL transcript file's mtime and last line:
+State is derived from the JSONL transcript file's last line (content-first), with mtime as a fallback:
 
 ```
-file modified < 30s ago ─────────────────────────── → active
 last line type == "progress" ────────────────────── → active
-last line message.role == "assistant" ───────────── → waiting
+last line message.role == "assistant" ───────────── → waiting/input
 last line message.role == "user" && mtime < 5min ── → active
+file modified < 5s ago (fallback) ─────────────── → active
 otherwise ──────────────────────────────────────── → idle
 ```
 
 ### Refresh Cycle
 
-Each cycle (every 2 seconds):
+Each cycle (every 1 second):
 
 1. Single `ps` call → cache output
 2. Single batched `lsof` call → resolve all CWDs at once

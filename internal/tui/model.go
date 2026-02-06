@@ -66,7 +66,7 @@ const (
 	uiVerticalOverhead = 6
 
 	// refreshInterval is the time between session discovery cycles.
-	refreshInterval = 2 * time.Second
+	refreshInterval = 1 * time.Second
 )
 
 // columnWidths holds the computed widths for each table column.

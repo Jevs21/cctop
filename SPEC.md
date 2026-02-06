@@ -26,14 +26,14 @@ Each session is in exactly one of four states:
 | `input`   | Claude is blocked waiting for user response to a question  | Purple `◈`     |
 | `idle`    | Session exists but has been inactive                       | Dim `○`        |
 
-State is determined from the session's JSONL transcript file:
+State is determined from the session's JSONL transcript file using a content-first approach (last-line content is checked before mtime):
 
-1. If the file was modified within the last **30 seconds** → `active`
-2. If the last line has `"type": "progress"` → `active`
-3. If the last line has `"message.role": "assistant"`:
+1. If the last line has `"type": "progress"` → `active`
+2. If the last line has `"message.role": "assistant"`:
    - If `message.content` contains a `tool_use` block with `"name": "AskUserQuestion"` → `input`
    - Otherwise → `waiting`
-4. If the last line has `"message.role": "user"` and the file is less than **5 minutes** old → `active`
+3. If the last line has `"message.role": "user"` and the file is less than **5 minutes** old → `active`
+4. If the file was modified within the last **5 seconds** (fallback for unrecognized content) → `active`
 5. Otherwise → `idle`
 
 ### Session Source
@@ -155,7 +155,7 @@ When no sessions are found:
 
 ### Refresh Loop
 
-Discovery runs in a background goroutine on a 2-second tick:
+Discovery runs in a background goroutine on a 1-second tick:
 
 1. Discover all running Claude processes (single `ps` call)
 2. Resolve working directories (single batched `lsof` call)
@@ -163,7 +163,7 @@ Discovery runs in a background goroutine on a 2-second tick:
 4. Determine state for each session
 5. Deliver results to the TUI for rendering
 
-**Refresh interval**: 2 seconds.
+**Refresh interval**: 1 second.
 
 ### Topic Extraction
 
@@ -258,7 +258,7 @@ The only external commands used are `ps` (process enumeration) and `lsof` (CWD r
 
 ### Refresh
 
-Session discovery runs in a background goroutine triggered by a 2-second tick. Each tick fires `refreshSessionsCmd()` which calls `session.DiscoverAll()` and delivers the result as a `sessionsRefreshedMsg`.
+Session discovery runs in a background goroutine triggered by a 1-second tick. Each tick fires `refreshSessionsCmd()` which calls `session.DiscoverAll()` and delivers the result as a `sessionsRefreshedMsg`.
 
 ## Future Considerations
 

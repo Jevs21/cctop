@@ -287,6 +287,36 @@ func TestDetectState(t *testing.T) {
 			t.Errorf("expected StateWaiting for string content, got %v", state)
 		}
 	})
+
+	t.Run("recent file with unrecognized type is active", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "unrecognized_recent.jsonl")
+		content := `{"type":"unknown_future_type"}`
+		writeTestFile(t, filePath, content)
+
+		now := time.Now()
+		mtime := now.Add(-3 * time.Second) // 3s ago — within 5s fallback window
+		os.Chtimes(filePath, mtime, mtime)
+
+		state := session.DetectState(filePath, mtime, now)
+		if state != session.StateActive {
+			t.Errorf("expected StateActive for recent unrecognized type, got %v", state)
+		}
+	})
+
+	t.Run("old file with unrecognized type is idle", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "unrecognized_old.jsonl")
+		content := `{"type":"unknown_future_type"}`
+		writeTestFile(t, filePath, content)
+
+		now := time.Now()
+		mtime := now.Add(-10 * time.Second) // 10s ago — outside 5s fallback window
+		os.Chtimes(filePath, mtime, mtime)
+
+		state := session.DetectState(filePath, mtime, now)
+		if state != session.StateIdle {
+			t.Errorf("expected StateIdle for old unrecognized type, got %v", state)
+		}
+	})
 }
 
 func TestReadLastLine(t *testing.T) {
